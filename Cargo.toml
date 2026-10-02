@@ -6,7 +6,7 @@ rust-version = "1.98"
 license = "MIT"
 description = "A native WhatsApp client built with Rust and egui"
 homepage = "https://zapfast.rocks"
-repository = "https://github.com/crmne/zapfast"
+repository = "https://github.com/cem2ran/zapfast"
 keywords = ["whatsapp", "chat", "egui", "messaging"]
 categories = ["gui"]
 
@@ -69,6 +69,8 @@ base64 = "0.22"
 rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"] }
 keyring-core = "1"
 getrandom = "0.4"
+# Private executable directory for the bundled on-device translation helper.
+tempfile = "3"
 zeroize = "1"
 rand = "0.10"
 # The updater's HTTP client, with the proxy setting.
@@ -214,7 +216,6 @@ windows = { version = "0.62", features = ["Media_Control", "Foundation_Collectio
 winresource = "0.1"
 
 [dev-dependencies]
-tempfile = "3"
 # Checks the default log filter the way fastframe-log's logger reads it.
 # Already in the tree through fastframe-log, at this version.
 env_logger = { version = "0.11", default-features = false }

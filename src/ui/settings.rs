@@ -390,6 +390,26 @@ fn sections(app: &App) -> Vec<Section> {
         ),
         |settings| &mut settings.auto_download,
     );
+    chats.row(
+        translated(locale, "Chat translation"),
+        translated(locale, "Translate incoming text and captions on this device. Enable it in a chat's More menu. Language packs download once."),
+        move |ui, app| {
+            if !crate::translation::Translations::supported_build() || app.translations.unavailable {
+                theme::text(ui, crate::i18n::gettext(app.locale, "On-device translation is unavailable on this device."), theme::regular(12.0), palette.secondary);
+                return;
+            }
+            app.actions.push(Action::LoadTranslationLanguages);
+            let mut target = app.settings.translation_target.clone();
+            egui::ComboBox::from_id_salt("chat-translation-target")
+                .selected_text(&target)
+                .show_ui(ui, |ui| {
+                    for language in &app.translations.languages {
+                        ui.selectable_value(&mut target, language.code.clone(), format!("{} ({})", language.name, language.code));
+                    }
+                });
+            if target != app.settings.translation_target { app.actions.push(Action::SetTranslationTarget(target)); }
+        },
+    );
     // macOS has no public API to pause other apps' media.
     if crate::media_pause::SUPPORTED {
         chats.toggle(

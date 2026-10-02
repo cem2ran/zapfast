@@ -347,6 +347,7 @@ pub struct UnreadDivider {
 pub struct App {
     pub dirs: AppDirs,
     pub settings: Settings,
+    pub translations: crate::translation::Translations,
     /// Resolved interface language, from the setting or the system locale.
     pub locale: Locale,
     settings_dirty: bool,
@@ -949,6 +950,7 @@ impl App {
         let mut app = Self {
             dirs,
             settings,
+            translations: Default::default(),
             locale,
             settings_dirty: false,
             last_settings_save: Instant::now(),
@@ -2644,6 +2646,9 @@ impl App {
                 }
             }
             LinkStatus::LoggedOut => {
+                self.translations.clear();
+                self.settings.translated_chats.clear();
+                self.mark_settings_dirty();
                 self.poll_voting.clear();
                 self.interactive_sending.clear();
                 self.poll_creating = false;
@@ -5003,6 +5008,67 @@ impl App {
                 self.mark_settings_dirty();
             }
             Action::SettingsChanged => self.mark_settings_dirty(),
+            Action::LoadTranslationLanguages => self.translations.load_languages(&self.waker),
+            Action::SetTranslationTarget(target) => {
+                if self
+                    .translations
+                    .languages
+                    .iter()
+                    .any(|language| language.code == target)
+                {
+                    self.settings.translation_target = target;
+                    self.translations.clear();
+                    for conversation in self.conversations.values_mut() {
+                        conversation.rows.clear();
+                    }
+                    self.mark_settings_dirty();
+                }
+            }
+            Action::SetChatTranslation(chat, enabled) => {
+                if enabled {
+                    self.settings.translated_chats.insert(chat.clone());
+                    self.translations.load_languages(&self.waker);
+                } else {
+                    self.settings.translated_chats.remove(&chat);
+                    self.translations.clear();
+                }
+                if let Some(conversation) = self.conversations.get_mut(&chat) {
+                    conversation.rows.clear();
+                }
+                self.mark_settings_dirty();
+            }
+            Action::TranslateMessage(chat, id) => {
+                if self.settings.translated_chats.contains(&chat)
+                    && let Some(message) = self.conversations.get(&chat).and_then(|conversation| {
+                        conversation
+                            .messages
+                            .iter()
+                            .find(|message| message.id == id)
+                    })
+                    && !message.from_me
+                    && let Some(text) = crate::translation::message_text(message)
+                {
+                    self.translations.request(
+                        crate::translation::Key::new(
+                            &chat,
+                            &id,
+                            text,
+                            &self.settings.translation_target,
+                        ),
+                        &self.waker,
+                    );
+                }
+            }
+            Action::ToggleOriginalTranslation(key) => {
+                self.translations.toggle_original(&key);
+                if let Some(conversation) = self.conversations.get_mut(&key.chat) {
+                    conversation.rows.remove(&key.message);
+                }
+            }
+            Action::RetryTranslation(key) => self.translations.retry(&key),
+            Action::PrepareTranslation(source) => self
+                .translations
+                .prepare(source, self.settings.translation_target.clone()),
             Action::SetAccountPrivacy { kind, choice } => {
                 // The value lives on the phone: nothing is written without a
                 // connection and a snapshot to write against.
@@ -5287,6 +5353,11 @@ impl App {
             .sync(self.settings.wallpaper_image.as_deref(), &self.waker);
         self.handle_notification_opens();
         self.handle_events();
+        for (chat, message) in self.translations.poll() {
+            if let Some(conversation) = self.conversations.get_mut(&chat) {
+                conversation.rows.remove(&message);
+            }
+        }
         self.tick(ctx);
         self.tick_audio();
         self.tick_video(ctx);
@@ -5336,6 +5407,7 @@ impl App {
             return;
         }
         self.app_lock.lock();
+        self.translations.clear();
         self.window_focused = false;
         self.flush_open_draft();
         self.recording = None;
@@ -7657,6 +7729,7 @@ mod tests {
     fn automatic_updates_require_opt_in_and_explicit_restart() {
         use crate::updates::{DownloadState, Installation, Kind, Prepared};
         let mut app = app();
+        app.settings.check_for_updates = true;
         let ctx = egui::Context::default();
         app.update = Some(crate::updates::Release {
             version: "99.0.0".into(),
@@ -8693,6 +8766,44 @@ mod tests {
             forwarded: false,
             thumbnail: None,
         }
+    }
+
+    #[test]
+    fn translation_settings_and_view_toggles_preserve_original_message_content() {
+        use crate::translation::{Key, Language};
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let chat = "synthetic-translation-chat";
+        let mut original = message(chat, "translation-message", 1);
+        original.content = Content::text("Hola mundo");
+        app.conversations.insert(
+            chat.into(),
+            Conversation {
+                messages: vec![original.clone()],
+                ..Default::default()
+            },
+        );
+        // An unavailable worker is deliberate here: the state transition test
+        // must neither translate real content nor download language packs.
+        app.translations.unavailable = true;
+        app.translations.languages = vec![Language {
+            code: "de".into(),
+            name: "German".into(),
+        }];
+        app.apply(Action::SetChatTranslation(chat.into(), true), &ctx);
+        assert!(app.settings.translated_chats.contains(chat));
+        let key = Key::new(chat, "translation-message", "Hola mundo", "en");
+        app.translations.sample(key.clone(), "Hello world");
+        app.apply(Action::ToggleOriginalTranslation(key.clone()), &ctx);
+        assert!(app.translations.get(&key).unwrap().show_original);
+        assert_eq!(app.conversations[chat].messages, vec![original]);
+        app.apply(Action::SetTranslationTarget("de".into()), &ctx);
+        assert!(app.translations.get(&key).is_none());
+        assert_eq!(app.settings.translation_target, "de");
+        app.apply(Action::SetTranslationTarget("unsupported".into()), &ctx);
+        assert_eq!(app.settings.translation_target, "de");
+        app.apply(Action::SetChatTranslation(chat.into(), false), &ctx);
+        assert!(!app.settings.translated_chats.contains(chat));
     }
 
     #[test]

@@ -1624,6 +1624,13 @@ pub enum Action {
     ReloadThemes,
     OpenThemesFolder,
     SettingsChanged,
+    LoadTranslationLanguages,
+    SetTranslationTarget(String),
+    SetChatTranslation(ChatId, bool),
+    TranslateMessage(ChatId, String),
+    ToggleOriginalTranslation(crate::translation::Key),
+    RetryTranslation(crate::translation::Key),
+    PrepareTranslation(String),
     /// Writes one WhatsApp account privacy category on the phone.
     SetAccountPrivacy {
         kind: crate::privacy::PrivacyKind,

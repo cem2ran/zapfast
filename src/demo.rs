@@ -1698,6 +1698,40 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
     for part in page.split(',').map(str::trim) {
         match part {
             "chat" | "" => {}
+            "translations" | "translations-original" => {
+                let chat = app.open_chat.clone().unwrap();
+                app.settings.translated_chats.insert(chat.clone());
+                app.settings.translation_target = "en".into();
+                let lines = [
+                    ("Hola, ¿cómo estás?", "Hello, how are you?"),
+                    (
+                        "Встречаемся завтра в десять у вокзала.",
+                        "We'll meet tomorrow at ten at the station.",
+                    ),
+                    ("Yarın kahve içelim mi?", "Shall we have coffee tomorrow?"),
+                ];
+                let mut next = 0;
+                let conversation = app.conversations.get_mut(&chat).unwrap();
+                conversation
+                    .messages
+                    .retain(|message| matches!(message.content, Content::Text { .. }));
+                for message in &mut conversation.messages {
+                    if message.from_me {
+                        continue;
+                    }
+                    if let Content::Text { text, preview } = &mut message.content {
+                        let (source, translation) = lines[next % lines.len()];
+                        *text = source.into();
+                        *preview = None;
+                        let key = crate::translation::Key::new(&chat, &message.id, source, "en");
+                        app.translations.sample(key.clone(), translation);
+                        if part == "translations-original" {
+                            app.translations.toggle_original(&key);
+                        }
+                        next += 1;
+                    }
+                }
+            }
             "chat-menu" => app.open_chat_menu = Some(app.chats[0].id.clone()),
             "chat-header-menu" => app.open_header_menu = app.open_chat.clone(),
             "interactive-actions" => interactive_actions_sample(app),
@@ -3004,6 +3038,109 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn translated_bubbles_copy_the_displayed_text_and_keep_original_messages() {
+        for (page, shown, hidden) in [
+            ("translations", "Hello, how are you?", "Hola, ¿cómo estás?"),
+            (
+                "translations-original",
+                "Hola, ¿cómo estás?",
+                "Hello, how are you?",
+            ),
+        ] {
+            let mut app = app();
+            apply_flags(&mut app, Some(page));
+            let ctx = egui::Context::default();
+            app.attach(&ctx);
+            render(&mut app, &ctx);
+            let rows = app.copy_rows.lock().unwrap();
+            assert!(rows.iter().any(|row| row.body.contains(shown)));
+            assert!(rows.iter().all(|row| !row.body.contains(hidden)));
+            assert!(app.conversations[SAMPLES[0].id].messages.iter().any(|message| {
+                matches!(&message.content, Content::Text { text, .. } if text == "Hola, ¿cómo estás?")
+            }));
+        }
+    }
+
+    #[test]
+    fn clicking_translation_control_switches_the_body_and_sends_nothing() {
+        let mut app = app();
+        apply_flags(&mut app, Some("translations"));
+        let ctx = egui::Context::default();
+        app.attach(&ctx);
+        render(&mut app, &ctx);
+        let viewport = app.selection_view.lock().unwrap().unwrap();
+        let key = app.conversations[SAMPLES[0].id]
+            .messages
+            .iter()
+            .rev()
+            .find_map(|message| {
+                let text = crate::translation::message_text(message)?;
+                let rect = ctx.data(|data| {
+                    data.get_temp::<egui::Rect>(
+                        crate::ui::conversation::bubble_id(SAMPLES[0].id, &message.id)
+                            .with("translation-control"),
+                    )
+                })?;
+                if !viewport.contains(rect.center()) {
+                    return None;
+                }
+                let key = crate::translation::Key::new(SAMPLES[0].id, &message.id, text, "en");
+                app.translations.get(&key).map(|_| key)
+            })
+            .expect("visible translated message");
+        app.backend.record_demo_commands();
+        for expected in [true, false] {
+            render(&mut app, &ctx);
+            let pos = ctx
+                .data(|data| {
+                    data.get_temp::<egui::Rect>(
+                        crate::ui::conversation::bubble_id(&key.chat, &key.message)
+                            .with("translation-control"),
+                    )
+                })
+                .unwrap()
+                .center();
+            for pressed in [true, false] {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1180.0, 780.0),
+                        )),
+                        events: vec![
+                            egui::Event::PointerMoved(pos),
+                            egui::Event::PointerButton {
+                                pos,
+                                pressed,
+                                button: egui::PointerButton::Primary,
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ],
+                        ..Default::default()
+                    },
+                    |ui| {
+                        let ctx = ui.ctx().clone();
+                        app.background_frame(&ctx);
+                        app.frame_ui(ui);
+                    },
+                );
+                output.textures_delta.clear();
+            }
+            assert_eq!(app.translations.get(&key).unwrap().show_original, expected);
+            assert!(
+                app.backend
+                    .take_demo_commands()
+                    .iter()
+                    .all(|command| !matches!(
+                        command,
+                        crate::backend::Command::SendText { .. }
+                            | crate::backend::Command::Forward { .. }
+                    ))
+            );
         }
     }
 

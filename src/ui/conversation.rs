@@ -45,6 +45,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     if theme::macos_chrome(ui.ctx()) {
         super::banner(app, ui);
     }
+    translation_bar(app, ui, &chat);
     composer(app, ui, &chat);
     messages(app, ui, &chat);
     // Over the messages, which scroll under the header.
@@ -65,6 +66,63 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         header.bottom(),
         ui.max_rect().bottom(),
     );
+}
+
+fn translation_bar(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
+    if !app.settings.translated_chats.contains(&chat.id) {
+        return;
+    }
+    let palette = app.palette;
+    let locale = app.locale;
+    egui::Panel::top("chat-translation")
+        .show_separator_line(false)
+        .frame(
+            Frame::new()
+                .fill(palette.panel)
+                .inner_margin(Margin::symmetric(14, 4)),
+        )
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                let status = if app.translations.unavailable {
+                    crate::i18n::gettext(
+                        locale,
+                        "On-device translation is unavailable on this Mac.",
+                    )
+                    .into_owned()
+                } else if app.translations.preparing {
+                    crate::i18n::gettext(locale, "Downloading language packs…").into_owned()
+                } else if app.translations.preparation_failed {
+                    crate::i18n::gettext(
+                        locale,
+                        "Language download cancelled or failed. Click Download languages to retry.",
+                    )
+                    .into_owned()
+                } else {
+                    format!(
+                        "{}: {}",
+                        crate::i18n::gettext(locale, "On-device translation"),
+                        app.settings.translation_target
+                    )
+                };
+                theme::text(ui, status, theme::regular(12.0), palette.secondary);
+                if ui
+                    .small_button(crate::i18n::gettext(locale, "Translation settings"))
+                    .clicked()
+                {
+                    app.actions.push(Action::Open(crate::model::Page::Settings));
+                    app.actions.push(Action::SearchSettings(
+                        crate::i18n::gettext(locale, "Chat translation").into_owned(),
+                    ));
+                }
+                if ui
+                    .small_button(crate::i18n::gettext(locale, "Stop translating chat"))
+                    .clicked()
+                {
+                    app.actions
+                        .push(Action::SetChatTranslation(chat.id.clone(), false));
+                }
+            });
+        });
 }
 
 fn empty(app: &mut App, ui: &mut egui::Ui) {
@@ -240,6 +298,7 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> Rect {
                             leave_label.as_ref(),
                             "Copy number",
                             "Close chat",
+                            "Translate chat automatically",
                         ],
                         true,
                     );
@@ -252,6 +311,24 @@ fn header(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> Rect {
                         .width(width)
                         .frame(widgets::menu_frame(&palette))
                         .show(|ui| {
+                            let translating = app.settings.translated_chats.contains(&chat.id);
+                            let label = if translating {
+                                crate::i18n::gettext(app.locale, "Stop translating chat")
+                            } else {
+                                crate::i18n::gettext(app.locale, "Translate chat automatically")
+                            };
+                            if widgets::menu_item_enabled(
+                                ui,
+                                &palette,
+                                None,
+                                &label,
+                                translating || crate::translation::Translations::supported_build(),
+                            ) {
+                                app.actions.push(Action::SetChatTranslation(
+                                    chat.id.clone(),
+                                    !translating,
+                                ));
+                            }
                             if widgets::menu_item(ui, &palette, Some(Icon::Info), "Info") {
                                 app.actions
                                     .push(Action::ShowDialog(Dialog::ChatInfo(chat.id.clone())));
@@ -1634,6 +1711,9 @@ struct View<'a> {
     chat: &'a Chat,
     me: Option<&'a str>,
     auto_download: bool,
+    translate: bool,
+    translation_target: &'a str,
+    translations: &'a crate::translation::Translations,
     connected: bool,
     poll_voting: &'a HashSet<(ChatId, String)>,
     interactive_pending: &'a HashSet<(ChatId, String)>,
@@ -1737,6 +1817,9 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
         chat,
         me: app.me.as_deref(),
         auto_download: app.settings.auto_download,
+        translate: app.settings.translated_chats.contains(&chat.id),
+        translation_target: &app.settings.translation_target,
+        translations: &app.translations,
         connected: app.link.is_connected(),
         poll_voting: &app.poll_voting,
         interactive_pending: &app.interactive_sending,
@@ -5440,6 +5523,126 @@ fn rich_body(
     span: Option<f32>,
     actions: &mut Vec<Action>,
 ) -> Option<Rect> {
+    use crate::translation::{Key, State};
+    if !view.translate
+        || crate::translation::message_text(message) != Some(text)
+        || !crate::translation::eligible(text)
+    {
+        return paint_rich_body(
+            ui,
+            view,
+            message,
+            text,
+            BodySpace {
+                width,
+                reserve,
+                span,
+            },
+            actions,
+        );
+    }
+    let key = Key::new(&view.chat.id, &message.id, text, view.translation_target);
+    let entry = view.translations.get(&key);
+    if entry.is_none() && !view.translations.unavailable {
+        actions.push(Action::TranslateMessage(
+            view.chat.id.clone(),
+            message.id.clone(),
+        ));
+    }
+    let body = match entry {
+        Some(crate::translation::Entry {
+            state: State::Translated(translated),
+            show_original: false,
+        }) => translated.as_str(),
+        _ => text,
+    };
+    let label = match entry.map(|entry| &entry.state) {
+        Some(State::Translated(_)) => Some(if entry.unwrap().show_original {
+            crate::i18n::gettext(view.locale, "Show translation")
+        } else {
+            crate::i18n::gettext(view.locale, "Show original")
+        }),
+        Some(State::Download(_)) => Some(crate::i18n::gettext(view.locale, "Download languages")),
+        Some(State::Failed) => Some(crate::i18n::gettext(
+            view.locale,
+            "Translation failed · retry",
+        )),
+        Some(State::Unsupported) => Some(crate::i18n::gettext(
+            view.locale,
+            "Language not supported on this device",
+        )),
+        Some(State::Pending) => Some(crate::i18n::gettext(view.locale, "Translating…")),
+        _ => None,
+    };
+    let rect = paint_rich_body(
+        ui,
+        view,
+        message,
+        body,
+        BodySpace {
+            width,
+            reserve: if label.is_some() { None } else { reserve },
+            span,
+        },
+        actions,
+    );
+    let Some(label) = label else {
+        return rect;
+    };
+    if matches!(
+        entry.map(|entry| &entry.state),
+        Some(State::Pending | State::Unsupported)
+    ) {
+        theme::text(ui, label, theme::regular(11.5), view.palette.secondary);
+        return None;
+    }
+    let response = ui.add(
+        egui::Button::new(
+            egui::RichText::new(label)
+                .font(theme::regular(11.5))
+                .color(view.palette.secondary),
+        )
+        .frame(false),
+    );
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(
+            bubble_id(&view.chat.id, &message.id).with("translation-control"),
+            response.rect,
+        );
+    });
+    if response.clicked() {
+        match entry.map(|entry| &entry.state) {
+            Some(State::Translated(_)) => actions.push(Action::ToggleOriginalTranslation(key)),
+            Some(State::Download(source)) => {
+                actions.push(Action::PrepareTranslation(source.clone()))
+            }
+            Some(State::Failed) => actions.push(Action::RetryTranslation(key)),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Wrapping width, optional inline footer reservation, and card span.
+struct BodySpace {
+    width: f32,
+    reserve: Option<f32>,
+    span: Option<f32>,
+}
+
+fn paint_rich_body(
+    ui: &mut egui::Ui,
+    view: &View<'_>,
+    message: &Message,
+    text: &str,
+    space: BodySpace,
+    actions: &mut Vec<Action>,
+) -> Option<Rect> {
+    let BodySpace {
+        width,
+        reserve,
+        span,
+    } = space;
     let palette = view.palette;
     let mentions = mentions_of(view, message);
     let style = markup::Style {

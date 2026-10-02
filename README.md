@@ -1,4 +1,42 @@
-# ZapFast
+# ZapFast with on-device chat translation
+
+This fork adds automatic translation of incoming chat text and image, video,
+and document captions on **macOS 26 or later**. It uses Apple's Translation
+framework and keeps translation on your Mac. Original messages remain in the
+archive and are used for replies and forwarding.
+
+1. Open **Settings > Chats > Chat translation** and select the target language.
+2. Open a chat's **More (⋯)** menu and choose **Translate chat automatically**.
+3. Incoming messages translate as they enter view, including new messages and
+   older history. Choose **Show original** under a translated message to switch
+   back, or **Stop translating chat** to turn translation off for that chat.
+4. If a language pack is missing, choose **Download languages** below the
+   message and approve Apple's download dialog. Once installed, that language
+   pair works offline. Cancelling keeps the original text visible.
+
+Build on macOS with **Xcode 26 or newer**, plus the Rust and build dependencies
+listed below. Cargo compiles and embeds the native Swift helper, so packaged
+binaries need no separate helper installation. Other platforms and older Macs
+keep the original app functionality, with chat translation unavailable. Builds
+using an older SDK report that translation is unavailable.
+
+Translation detects each incoming message's language independently. Very short
+or mixed-language messages can be misidentified by the native recognizer.
+Outgoing messages, quoted replies, polls, stickers, and interactive controls
+retain their original text. Emoji-only messages and standalone URLs are skipped.
+Translation is limited to Apple's supported languages and text up to 16 KiB.
+Translations are cached in memory only, with a bounded queue and cache; edits
+and target-language changes invalidate the corresponding result. The app lock
+and unlinking clear the cache. Settings retain the target language and the
+chats you enabled locally.
+
+Translation never sends message text to a server. Language pack downloads need
+network access; Apple may collect framework usage metrics, excluding message
+text ([Apple TranslationSession documentation](https://developer.apple.com/documentation/translation/translationsession)).
+
+This fork checks its own repository for updates, and update checks default to
+off. Upstream releases do not contain this feature. The original ZapFast
+documentation follows.
 
 **WhatsApp, native and fast.** ZapFast is a WhatsApp client written in Rust
 with [egui](https://github.com/emilk/egui). It uses

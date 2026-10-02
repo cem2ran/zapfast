@@ -402,6 +402,10 @@ pub struct Settings {
     /// Download attachments when they enter view instead of on click.
     #[serde(alias = "auto_download_images")]
     pub auto_download: bool,
+    /// Chats translated automatically on this device. Never synced to WhatsApp.
+    pub translated_chats: std::collections::HashSet<String>,
+    /// Target language identifier returned by the local translation engine.
+    pub translation_target: String,
     /// Show the default doodle wallpaper behind conversations.
     pub show_wallpaper: bool,
     /// Colour selected in the wallpaper picker.
@@ -489,6 +493,8 @@ impl Default for Settings {
             send_read_receipts: true,
             send_typing: true,
             auto_download: true,
+            translated_chats: Default::default(),
+            translation_target: "en".into(),
             show_wallpaper: true,
             wallpaper_color: WallpaperColor::Theme,
             dark_wallpaper_color: WallpaperColor::Theme,
@@ -505,7 +511,7 @@ impl Default for Settings {
             group_sounds: true,
             download_folder: None,
             proxy: String::new(),
-            check_for_updates: true,
+            check_for_updates: false,
             download_updates_automatically: false,
             save_contacts_to_phone: true,
             voice_speed: 1.0,
@@ -724,12 +730,25 @@ mod tests {
     }
 
     #[test]
+    fn chat_translation_defaults_off_and_round_trips_per_chat() {
+        let mut settings: Settings = serde_json::from_str("{}").unwrap();
+        assert!(settings.translated_chats.is_empty());
+        assert_eq!(settings.translation_target, "en");
+        settings.translated_chats.insert("synthetic-chat".into());
+        settings.translation_target = "tr".into();
+        let saved = serde_json::to_string(&settings).unwrap();
+        let restored: Settings = serde_json::from_str(&saved).unwrap();
+        assert_eq!(settings.translated_chats, restored.translated_chats);
+        assert_eq!(restored.translation_target, "tr");
+    }
+
+    #[test]
     fn unknown_and_missing_fields_are_tolerated() {
         let parsed: Settings =
             serde_json::from_str(r#"{"theme":"light","future_field":1}"#).expect("parses");
         assert_eq!(parsed.theme, ThemeChoice::Light);
         assert!(parsed.enter_sends);
-        assert!(parsed.check_for_updates);
+        assert!(!parsed.check_for_updates);
         assert!(!parsed.download_updates_automatically);
         assert!(parsed.show_wallpaper);
         assert_eq!(parsed.wallpaper_color, WallpaperColor::Theme);

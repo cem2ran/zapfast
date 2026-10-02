@@ -27,7 +27,7 @@ pub const CONFIG: UpdateConfig = UpdateConfig {
     // with the current key until installs trust this one too.
     additional_publisher_keys: &[include_str!("../assets/update-public-key-next.hex")],
     ..UpdateConfig::new(
-        "crmne/zapfast",
+        "cem2ran/zapfast",
         "ZapFast",
         "zapfast",
         env!("CARGO_PKG_VERSION"),
